@@ -35,32 +35,47 @@ jobs:
         image: your/image-to-test
         args: --file=Dockerfile --sarif-file-output=snyk.sarif
 
-    - name: Sanitize SARIF with jq
+    - name: Sanitize SARIF with jq (defensa contra nulls)
       run: |
         jq '
-          # 1) Map string severities in results to numbers
-          (.runs[].results[]? |
-            if .level == "low" then .level = 1
-            elif .level == "medium" then .level = 2
-            elif .level == "high" then .level = 3
-            elif .level == "critical" then .level = 4
-            elif (.level == null or .level == "undefined") then .level = 2
-            else . end
-          ) |
-
-          # 2) Asegurar que .severity (si existe) sea numérico
-          (.runs[].results[]? |
-            if .severity == null or .severity == "undefined" then .severity = 2 else . end
-          ) |
-
-          # 3) Limpiar el campo security-severity en las reglas
-          (.runs[].tool.driver.rules[]? |
-            if (.properties["security-severity"] == null) or (.properties["security-severity"] == "undefined") then
-              .properties["security-severity"] = "0"
-            else
-              .
-            end
-          )
+          # 1) Asegurar que runs, results y rules sean arrays
+          .runs = (.runs // []) |
+          .runs = (.runs | map(
+            .results = (.results // []) |
+            .tool.driver.rules = (.tool.driver.rules // []) |
+            .
+          )) |
+          # 2) Mapear resultados: level y severity
+          .runs = (.runs | map(
+            .results = (
+              .results
+              | map(
+                  if .level == "low"      then .level = 1
+                  elif .level == "medium" then .level = 2
+                  elif .level == "high"   then .level = 3
+                  elif .level == "critical" then .level = 4
+                  elif (.level == null or .level == "undefined") then .level = 2
+                  else . end
+                )
+              | map(
+                  if (.severity == null or .severity == "undefined") then .severity = 2 else . end
+                )
+            ) |
+            .
+          )) |
+          # 3) Limpiar properties["security-severity"] en las reglas
+          .runs = (.runs | map(
+            .tool.driver.rules = (
+              .tool.driver.rules
+              | map(
+                  if (.properties["security-severity"] == null or .properties["security-severity"] == "undefined") then
+                    .properties["security-severity"] = "0"
+                  else .
+                  end
+                )
+            ) |
+            .
+          ))
         ' snyk.sarif > snyk.fixed.sarif \
         && mv snyk.fixed.sarif snyk.sarif
 
