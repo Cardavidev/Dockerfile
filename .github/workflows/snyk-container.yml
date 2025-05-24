@@ -35,22 +35,37 @@ jobs:
         image: your/image-to-test
         args: --file=Dockerfile --sarif-file-output=snyk.sarif
 
-    - name: Sanitize SARIF severities
+    - name: Sanitize SARIF with jq
       run: |
-        # 1) Map string severities to numeric values
-        sed -i 's/"severity": "low"/"severity": 1/g' snyk.sarif
-        sed -i 's/"severity": "medium"/"severity": 2/g' snyk.sarif
-        sed -i 's/"severity": "high"/"severity": 3/g' snyk.sarif
-        sed -i 's/"severity": "critical"/"severity": 4/g' snyk.sarif
+        jq '
+          # 1) Map string severities in results to numbers
+          (.runs[].results[]? |
+            if .level == "low" then .level = 1
+            elif .level == "medium" then .level = 2
+            elif .level == "high" then .level = 3
+            elif .level == "critical" then .level = 4
+            elif (.level == null or .level == "undefined") then .level = 2
+            else . end
+          ) |
 
-        # 2) Replace any null severities with a default (2 = medium)
-        sed -i 's/"severity": null/"severity": 2/g' snyk.sarif
+          # 2) Asegurar que .severity (si existe) sea numérico
+          (.runs[].results[]? |
+            if .severity == null or .severity == "undefined" then .severity = 2 else . end
+          ) |
 
-        # 3) Sanitize legacy 'security-severity' fields
-        sed -i 's/"security-severity": null/"security-severity": "0"/g' snyk.sarif
-        sed -i 's/"security-severity": "undefined"/"security-severity": "0"/g' snyk.sarif
+          # 3) Limpiar el campo security-severity en las reglas
+          (.runs[].tool.driver.rules[]? |
+            if (.properties["security-severity"] == null) or (.properties["security-severity"] == "undefined") then
+              .properties["security-severity"] = "0"
+            else
+              .
+            end
+          )
+        ' snyk.sarif > snyk.fixed.sarif \
+        && mv snyk.fixed.sarif snyk.sarif
 
     - name: Upload result to GitHub Code Scanning
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: snyk.sarif
+
